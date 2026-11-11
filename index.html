@@ -464,14 +464,35 @@ async function downloadAll(){
   progress('Finished: saved ' + ok + ' of ' + fileNames.length + ' files.');
 }
 
+// Leaving the menus takes two steps: "x" + Enter leaves the file menu, then the OLA
+// prints its main menu, and a single "x" there returns it to logging. The main menu
+// throws away any key that arrives before it has finished printing, so the page waits
+// for the main menu to appear, then checks that logging really resumed.
 async function exitMenus(){
-  progress('Leaving the menus…');
-  // The file menu needs Enter after a command; the main menu takes a single key.
-  if (menuOpen && Date.now() - lastCmdAt < MENU_SAFE_MS) await run('x\r', { idle: 700, firstWait: 2000 });
-  await run('x', { idle: 700, firstWait: 2000 });
+  progress('Leaving the file menu…');
+  const tail = termBuf.slice(-800);
+  let inMain = /Menu: Main Menu/.test(tail) && tail.lastIndexOf('Menu: Main Menu') > tail.lastIndexOf('HELP');
+  if (!inMain){
+    let out = await run('x\r', { idle: 2500, firstWait: 4000 });
+    if (!/Menu: Main Menu/.test(out)) out += await run('', { idle: 2500, firstWait: 5000 });
+    if (!/Menu: Main Menu/.test(out)){
+      progress('The OLA didn’t show its main menu, so nothing more was sent. Check the terminal below, or press the OLA’s reset button to restart logging.');
+      return;
+    }
+  }
   menuOpen = false;
-  setDone('s4', true);
-  progress('Sent exit. If sensor data isn’t scrolling again, type x in the command box, or press the OLA’s reset button.');
+  for (let attempt = 1; attempt <= 3; attempt++){
+    progress('Returning to logging…');
+    await sleep(400);
+    const out = await run('x', { idle: 1500, firstWait: 2500 });
+    if (!/Menu: Main Menu/.test(out)){
+      setDone('s4', true);
+      progress(out.includes(',') ? 'Logging resumed. Sensor data is scrolling in the terminal again.'
+                                 : 'Left the menus. Sensor data should start scrolling at your next logging interval.');
+      return;
+    }
+  }
+  progress('The OLA stayed in its main menu. Press the OLA’s reset button to restart logging.');
 }
 
 $('btnConnect').onclick = connect;
