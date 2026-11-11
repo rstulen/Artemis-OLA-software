@@ -66,6 +66,11 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid 
 .files li.saved .fbtn{border-color:var(--ok);background:var(--ok);color:var(--panel)}
 .files li.failed .fbtn{border-color:var(--warn);color:var(--warn);background:transparent}
 .fbtn{min-width:150px;white-space:nowrap}
+.fbtns{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.dbtn{min-width:150px;white-space:nowrap;border-color:var(--warn);color:var(--warn);background:transparent}
+.dbtn.armed{background:var(--warn);color:var(--panel)}
+.files li.deleting{background:color-mix(in srgb, var(--warn) 12%, transparent);padding-left:10px;padding-right:10px}
+.files li.deleting .fstat,.files li.armed .fstat{color:var(--warn)}
 .files li.working .fbtn:disabled,.files li.saved .fbtn:disabled{opacity:1}
 .files li.working .fbtn{background:var(--accent);color:var(--accent-ink)}
 .fstat{display:block;font-size:.85rem;font-weight:700;color:var(--accent);margin-top:2px}
@@ -106,6 +111,7 @@ pre#term{margin:10px 0;height:240px;overflow:auto;background:var(--term);border:
             <button id="btnConnect">Connect</button>
             <button id="btnDisconnect" class="ghost" disabled>Disconnect</button>
           </div>
+          <div id="connectError" class="notice" role="alert" style="margin:12px 0 0" hidden></div>
         </li>
         <li id="s2">
           <strong>Open the file menu</strong>
@@ -159,6 +165,10 @@ pre#term{margin:10px 0;height:240px;overflow:auto;background:var(--term);border:
 const $ = id => document.getElementById(id);
 let port = null, reader = null, writer = null, keepReading = false;
 let lastRx = 0, capture = null, busy = false;
+// The OLA leaves its file menu after 60 seconds without a command, and its main menu
+// 15 seconds after that, so the page tracks this and reopens the menu when needed.
+let menuOpen = false, lastCmdAt = 0, rxTail = '';
+const MENU_IDLE_MS = 50000;
 let termBuf = '', termDirty = false;
 const TERM_MAX = 40000;
 const enc = new TextEncoder();
@@ -171,13 +181,15 @@ function setStatus(on, text){
 }
 function setDone(id, d){ $(id).classList.toggle('done', d); }
 function progress(t){ $('progress').textContent = t; }
+function showConnectError(html){ const el = $('connectError'); el.innerHTML = html; el.hidden = !html; }
 function setEnabled(){
   const c = !!port;
   $('btnConnect').disabled = c;
   $('btnDisconnect').disabled = !c;
   ['btnMenu','btnExit','btnRefresh','btnAll','btnManual','btnSend'].forEach(id => $(id).disabled = !c || busy);
   $('btnDisconnect').disabled = !c || busy;
-  document.querySelectorAll('.files .fbtn').forEach(b => b.disabled = !c || busy);
+  document.querySelectorAll('.files .fbtn, .files .dbtn').forEach(b => b.disabled = !c || busy || b.dataset.locked === '1');
+  if (busy) disarmDelete();
 }
 
 function termAppend(s){
@@ -195,9 +207,13 @@ async function connect(){
     port = await navigator.serial.requestPort();
     await port.open({ baudRate: Number($('baud').value), bufferSize: 65536 });
   }catch(e){
-    port = null; progress(e.name === 'NotFoundError' ? 'No port chosen.' : 'Couldn’t open the port: ' + e.message + ' Is CoolTerm or another program still connected?');
+    port = null;
+    if (e.name === 'NotFoundError'){ progress('No port chosen.'); return; }
+    showConnectError('<strong>The OLA is already in use.</strong> Close any other tabs with this page open, and close CoolTerm or the Arduino Serial Monitor. Then unplug the OLA, plug it back in, and click Connect again.');
+    progress('Couldn’t open the port (' + e.name + ': ' + e.message + ').');
     return;
   }
+  showConnectError('');
   writer = port.writable.getWriter();
   keepReading = true; readLoop();
   setStatus(true, 'Connected at ' + $('baud').value + ' baud'); setDone('s1', true);
@@ -216,6 +232,8 @@ async function readLoop(){
         const s = dec.decode(value, { stream:true });
         lastRx = Date.now();
         if (capture) capture.buf += s;
+        rxTail = (rxTail + s).slice(-200);
+        if (/No user input received/i.test(rxTail)){ menuOpen = false; rxTail = ''; }
         termAppend(s);
       }
     }catch(e){ termAppend('\n[read error: ' + e.message + ']\n'); }
@@ -224,7 +242,7 @@ async function readLoop(){
 }
 
 async function disconnect(){
-  keepReading = false;
+  keepReading = false; menuOpen = false;
   try{ if (reader) await reader.cancel(); }catch(e){}
   try{ if (writer){ writer.releaseLock(); } }catch(e){}
   try{ if (port) await port.close(); }catch(e){}
@@ -233,13 +251,13 @@ async function disconnect(){
   progress('Disconnected.'); setEnabled();
 }
 
-async function send(str){ if (writer) await writer.write(enc.encode(str)); }
+async function send(str){ if (writer){ lastCmdAt = Date.now(); await writer.write(enc.encode(str)); } }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // Send a command and collect everything that comes back until the line goes quiet.
 async function run(cmd, { idle = 900, firstWait = 4000, label = '', onProgress = null } = {}){
   capture = { buf:'' };
-  const start = Date.now(); lastRx = 0;
+  const start = Date.now(); lastRx = 0; lastCmdAt = start;
   await send(cmd);
   while (true){
     await sleep(100);
@@ -260,17 +278,27 @@ async function withBusy(fn){
   finally{ busy = false; setEnabled(); }
 }
 
-async function openMenu(){
-  progress('Opening the main menu…');
+async function reopenMenu(){
   await run('\r', { idle: 700, firstWait: 2500 });
-  progress('Opening the file menu…');
   await run('s', { idle: 700, firstWait: 2500 });
+  menuOpen = true;
+}
+async function openMenu(){
+  progress('Opening the file menu…');
+  await reopenMenu();
   setDone('s2', true);
   await listFiles();
+}
+// Before each file command, reopen the file menu if the OLA has timed out of it.
+async function ensureMenu(){
+  if (menuOpen && Date.now() - lastCmdAt < MENU_IDLE_MS) return;
+  progress('The OLA closed its file menu after sitting idle. Reopening it…');
+  await reopenMenu();
 }
 
 let fileNames = [];
 async function listFiles(){
+  await ensureMenu();
   progress('Reading the file list…');
   const out = await run('dir\r', { idle: 900, firstWait: 4000 });
   const seen = new Map();
@@ -297,15 +325,19 @@ function renderFiles(map){
     const st = document.createElement('span'); st.className = 'fstat'; st.setAttribute('aria-live', 'polite'); info.appendChild(st);
     const b = document.createElement('button'); b.className = 'ghost fbtn'; b.textContent = 'Download';
     b.addEventListener('click', () => withBusy(() => downloadFile(name)));
-    li.append(info, b); ul.appendChild(li);
-    rows.set(name, { li, btn: b, stat: st });
+    const d = document.createElement('button'); d.className = 'dbtn'; d.textContent = 'Delete';
+    if (PROTECTED.test(name)){ d.dataset.locked = '1'; d.title = 'This is the OLA’s settings file, so it can’t be deleted here.'; }
+    d.addEventListener('click', () => deleteClick(name));
+    const btns = document.createElement('div'); btns.className = 'fbtns'; btns.append(b, d);
+    li.append(info, btns); ul.appendChild(li);
+    rows.set(name, { li, btn: b, del: d, stat: st });
   }
   setEnabled();
 }
 
 function rowState(name, state, btnText, statText){
   const r = rows.get(name); if (!r) return;
-  r.li.classList.remove('working', 'saved', 'failed');
+  r.li.classList.remove('working', 'saved', 'failed', 'deleting', 'armed');
   if (state) r.li.classList.add(state);
   if (btnText != null) r.btn.textContent = btnText;
   if (statText != null) r.stat.textContent = statText;
@@ -337,6 +369,7 @@ async function downloadFile(name){
   const r = rows.get(name);
   if (r) r.li.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   rowState(name, 'working', 'Starting…', 'Asking the OLA for this file…');
+  await ensureMenu();
   progress('Requesting ' + name + '…');
   const raw = await run('type ' + name + '\r', {
     idle: 2000, firstWait: 8000, label: name + ':',
@@ -364,6 +397,45 @@ async function downloadFile(name){
   return true;
 }
 
+// Delete: the first click arms the button, a second click within 5 seconds deletes.
+const PROTECTED = /^OLA_(device)?settings\.txt$/i;
+let armed = null, armTimer = null;
+function disarmDelete(){
+  if (!armed) return;
+  const r = rows.get(armed);
+  if (r){ r.del.classList.remove('armed'); r.del.textContent = 'Delete'; r.li.classList.remove('armed'); r.stat.textContent = ''; }
+  armed = null; clearTimeout(armTimer);
+}
+function deleteClick(name){
+  if (busy) return;
+  if (armed === name){ disarmDelete(); withBusy(() => deleteFile(name)); return; }
+  disarmDelete();
+  const r = rows.get(name); if (!r) return;
+  armed = name;
+  r.del.classList.add('armed'); r.del.textContent = 'Click to confirm';
+  r.li.classList.add('armed');
+  r.stat.textContent = 'Click “Click to confirm” to permanently delete this file from the SD card.';
+  armTimer = setTimeout(disarmDelete, 5000);
+}
+async function deleteFile(name){
+  const r = rows.get(name);
+  rowState(name, 'deleting', null, 'Deleting from the SD card…');
+  await ensureMenu();
+  progress('Deleting ' + name + '…');
+  const out = await run('del ' + name + '\r', { idle: 900, firstWait: 4000 });
+  if (/deleted/i.test(out) && !/failed/i.test(out)){
+    if (r) r.li.remove();
+    rows.delete(name);
+    fileNames = fileNames.filter(f => f !== name);
+    if (!rows.size) $('files').innerHTML = '<li><p class="empty">No files left on the card.</p></li>';
+    progress('Deleted ' + name + ' from the SD card.');
+    return true;
+  }
+  rowState(name, 'failed', null, out.trim() ? 'The OLA couldn’t delete this file. Check the terminal for details.' : 'Nothing came back. Make sure the file menu is open.');
+  progress('Couldn’t delete ' + name + '.');
+  return false;
+}
+
 async function downloadAll(){
   if (!fileNames.length){ progress('List the files first.'); return; }
   let ok = 0;
@@ -375,6 +447,7 @@ async function exitMenus(){
   progress('Leaving the menus…');
   await run('x', { idle: 700, firstWait: 2000 });
   await run('x', { idle: 700, firstWait: 2000 });
+  menuOpen = false;
   setDone('s4', true);
   progress('Sent exit. If sensor data isn’t scrolling again, type x in the command box, or press the OLA’s reset button.');
 }
