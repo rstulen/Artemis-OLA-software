@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OLA SD card downloader</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#EDF3F1; --panel:#FFFFFF; --ink:#17323A; --muted:#58707A; --line:#C9D8D5;
+  --accent:#2453B8; --accent-ink:#FFFFFF; --ok:#22874A; --warn:#B4441C; --term:#F7FAF9;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0F1C20; --panel:#16272C; --ink:#E3EEEC; --muted:#93AAB0; --line:#2A4248;
+    --accent:#6F9BFF; --accent-ink:#0B1530; --ok:#5FD08A; --warn:#FF9670; --term:#0B171A;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0F1C20; --panel:#16272C; --ink:#E3EEEC; --muted:#93AAB0; --line:#2A4248;
+  --accent:#6F9BFF; --accent-ink:#0B1530; --ok:#5FD08A; --warn:#FF9670; --term:#0B171A;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:16px/1.5 "Atkinson Hyperlegible",system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:980px;margin:0 auto;padding:28px 20px 48px}
+h1{font-size:2rem;line-height:1.15;margin:0 0 6px;letter-spacing:-.01em}
+.lede{color:var(--muted);margin:0 0 24px;max-width:62ch}
+.grid{display:grid;grid-template-columns:minmax(0,340px) minmax(0,1fr);gap:20px}
+@media (max-width:760px){.grid{grid-template-columns:1fr}}
+section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px}
+h2{font-size:1.05rem;margin:0 0 12px}
+ol.steps{list-style:none;margin:0;padding:0;counter-reset:s}
+ol.steps>li{counter-increment:s;position:relative;padding:0 0 18px 38px}
+ol.steps>li:last-child{padding-bottom:0}
+ol.steps>li::before{content:counter(s);position:absolute;left:0;top:0;width:26px;height:26px;border-radius:50%;
+  border:2px solid var(--line);display:grid;place-items:center;font-weight:700;font-size:.85rem;color:var(--muted)}
+ol.steps>li.done::before{background:var(--ok);border-color:var(--ok);color:var(--panel)}
+ol.steps p{margin:4px 0 8px;color:var(--muted);font-size:.92rem}
+label{font-size:.9rem;color:var(--muted)}
+select,input[type=text]{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
+button{font:inherit;font-weight:700;border-radius:6px;border:2px solid var(--accent);background:var(--accent);color:var(--accent-ink);
+  padding:7px 14px;cursor:pointer}
+button.ghost{background:transparent;color:var(--accent)}
+button:disabled{opacity:.4;cursor:not-allowed}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.status{display:flex;align-items:center;gap:8px;font-weight:700;margin-bottom:14px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--muted)}
+.status.on .dot{background:var(--ok)}
+.requirement{margin:0 0 20px;padding:10px 14px;border:2px solid var(--accent);border-radius:8px;background:var(--panel);max-width:62ch}
+.notice{border-left:4px solid var(--warn);padding:8px 12px;background:var(--bg);margin-bottom:16px;border-radius:4px}
+.files{list-style:none;margin:0;padding:0}
+.files li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
+.files li:last-child{border-bottom:0}
+.files li{position:relative;border-radius:6px;transition:background-color .2s}
+.files li.working{background:color-mix(in srgb, var(--accent) 12%, transparent);padding-left:10px;padding-right:10px}
+.files li.working::after{content:"";position:absolute;left:0;bottom:-1px;height:3px;width:40%;background:var(--accent);border-radius:3px;animation:slide 1.2s ease-in-out infinite}
+@keyframes slide{0%{left:0;width:10%}50%{left:45%;width:40%}100%{left:90%;width:10%}}
+@media (prefers-reduced-motion: reduce){.files li.working::after{animation:none;left:0;width:100%}}
+.files li.saved .fbtn{border-color:var(--ok);background:var(--ok);color:var(--panel)}
+.files li.failed .fbtn{border-color:var(--warn);color:var(--warn);background:transparent}
+.fbtn{min-width:150px;white-space:nowrap}
+.files li.working .fbtn:disabled,.files li.saved .fbtn:disabled{opacity:1}
+.files li.working .fbtn{background:var(--accent);color:var(--accent-ink)}
+.fstat{display:block;font-size:.85rem;font-weight:700;color:var(--accent);margin-top:2px}
+.files li.saved .fstat{color:var(--ok)}
+.files li.failed .fstat{color:var(--warn)}
+.fname{font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;font-weight:500;overflow-wrap:anywhere}
+.fmeta{display:block;color:var(--muted);font-size:.82rem;font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace}
+.empty{color:var(--muted);margin:0}
+.progress{margin:12px 0 0;font-size:.92rem;color:var(--muted);min-height:1.5em}
+.check{display:flex;gap:8px;align-items:flex-start;margin-top:14px;font-size:.92rem;color:var(--ink)}
+.term-wrap{margin-top:20px}
+pre#term{margin:10px 0;height:240px;overflow:auto;background:var(--term);border:1px solid var(--line);border-radius:8px;
+  padding:10px;font:13px/1.45 "IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.cmd input{flex:1;min-width:160px;font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace}
+</style>
+</head>
+<body>
+<main>
+  <h1>OLA SD card downloader</h1>
+  <p class="lede">Pull log files off an OpenLog Artemis over USB, without removing the card. Close CoolTerm and the Arduino Serial Monitor first, since only one program can use the port.</p>
+
+  <p class="requirement"><strong>Run this page in Google Chrome on a desktop or laptop computer.</strong> Other browsers can’t connect to the OLA over USB.</p>
+
+  <div id="unsupported" class="notice" hidden>This browser can’t talk to USB serial devices. Open this file in Chrome or Edge on a desktop computer.</div>
+
+  <div class="grid">
+    <section>
+      <div class="status" id="status"><span class="dot"></span><span id="statusText">Not connected</span></div>
+      <ol class="steps">
+        <li id="s1">
+          <strong>Connect to the OLA</strong>
+          <p>Pick the OLA’s port in the browser’s popup.</p>
+          <div class="row">
+            <label for="baud">Baud</label>
+            <select id="baud">
+              <option>9600</option><option>57600</option><option selected>115200</option><option>230400</option><option>460800</option>
+            </select>
+            <button id="btnConnect">Connect</button>
+            <button id="btnDisconnect" class="ghost" disabled>Disconnect</button>
+          </div>
+        </li>
+        <li id="s2">
+          <strong>Open the file menu</strong>
+          <p>Pauses logging and lists the files on the card.</p>
+          <button id="btnMenu" disabled>Open menu and list files</button>
+        </li>
+        <li id="s3">
+          <strong>Download files</strong>
+          <p>Use the Download buttons on the file list.</p>
+        </li>
+        <li id="s4">
+          <strong>Resume logging</strong>
+          <p>Leaves the menus so the OLA starts logging again.</p>
+          <button id="btnExit" class="ghost" disabled>Leave menus</button>
+        </li>
+      </ol>
+    </section>
+
+    <section>
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <h2 style="margin:0">Files on the card</h2>
+        <div class="row">
+          <button id="btnRefresh" class="ghost" disabled>Refresh list</button>
+          <button id="btnAll" disabled>Download all</button>
+        </div>
+      </div>
+      <ul class="files" id="files"><li><p class="empty">Connect and open the menu to see files.</p></li></ul>
+      <label class="check"><input type="checkbox" id="csvOnly" checked>
+        <span>Keep only data lines (lines with commas) and save as .csv. Turn this off to save the raw text exactly as received.</span></label>
+      <div class="row" style="margin-top:12px">
+        <label for="manual">Other file</label>
+        <input type="text" id="manual" placeholder="dataLog00005.TXT">
+        <button id="btnManual" class="ghost" disabled>Download</button>
+      </div>
+      <p class="progress" id="progress" aria-live="polite"></p>
+    </section>
+  </div>
+
+  <section class="term-wrap">
+    <h2>Terminal</h2>
+    <pre id="term" aria-label="Serial output"></pre>
+    <div class="row cmd">
+      <input type="text" id="cmdInput" placeholder="Type a command, e.g. dir" aria-label="Command">
+      <button id="btnSend" class="ghost" disabled>Send</button>
+      <button id="btnClear" class="ghost">Clear</button>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let port = null, reader = null, writer = null, keepReading = false;
+let lastRx = 0, capture = null, busy = false;
+let termBuf = '', termDirty = false;
+const TERM_MAX = 40000;
+const enc = new TextEncoder();
+
+if (!('serial' in navigator)) $('unsupported').hidden = false;
+
+function setStatus(on, text){
+  $('status').classList.toggle('on', on);
+  $('statusText').textContent = text;
+}
+function setDone(id, d){ $(id).classList.toggle('done', d); }
+function progress(t){ $('progress').textContent = t; }
+function setEnabled(){
+  const c = !!port;
+  $('btnConnect').disabled = c;
+  $('btnDisconnect').disabled = !c;
+  ['btnMenu','btnExit','btnRefresh','btnAll','btnManual','btnSend'].forEach(id => $(id).disabled = !c || busy);
+  $('btnDisconnect').disabled = !c || busy;
+  document.querySelectorAll('.files .fbtn').forEach(b => b.disabled = !c || busy);
+}
+
+function termAppend(s){
+  termBuf += s;
+  if (termBuf.length > TERM_MAX) termBuf = termBuf.slice(-TERM_MAX);
+  if (!termDirty){ termDirty = true; requestAnimationFrame(() => {
+    const t = $('term'); const atBottom = t.scrollHeight - t.scrollTop - t.clientHeight < 40;
+    t.textContent = termBuf; termDirty = false;
+    if (atBottom) t.scrollTop = t.scrollHeight;
+  }); }
+}
+
+async function connect(){
+  try{
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: Number($('baud').value), bufferSize: 65536 });
+  }catch(e){
+    port = null; progress(e.name === 'NotFoundError' ? 'No port chosen.' : 'Couldn’t open the port: ' + e.message + ' Is CoolTerm or another program still connected?');
+    return;
+  }
+  writer = port.writable.getWriter();
+  keepReading = true; readLoop();
+  setStatus(true, 'Connected at ' + $('baud').value + ' baud'); setDone('s1', true);
+  progress('Connected. You should see sensor data in the terminal below.');
+  setEnabled();
+}
+
+async function readLoop(){
+  const dec = new TextDecoder();
+  while (port && port.readable && keepReading){
+    reader = port.readable.getReader();
+    try{
+      while (true){
+        const { value, done } = await reader.read();
+        if (done) break;
+        const s = dec.decode(value, { stream:true });
+        lastRx = Date.now();
+        if (capture) capture.buf += s;
+        termAppend(s);
+      }
+    }catch(e){ termAppend('\n[read error: ' + e.message + ']\n'); }
+    finally{ reader.releaseLock(); }
+  }
+}
+
+async function disconnect(){
+  keepReading = false;
+  try{ if (reader) await reader.cancel(); }catch(e){}
+  try{ if (writer){ writer.releaseLock(); } }catch(e){}
+  try{ if (port) await port.close(); }catch(e){}
+  port = null; writer = null; reader = null;
+  setStatus(false, 'Not connected'); ['s1','s2','s3','s4'].forEach(id => setDone(id,false));
+  progress('Disconnected.'); setEnabled();
+}
+
+async function send(str){ if (writer) await writer.write(enc.encode(str)); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Send a command and collect everything that comes back until the line goes quiet.
+async function run(cmd, { idle = 900, firstWait = 4000, label = '', onProgress = null } = {}){
+  capture = { buf:'' };
+  const start = Date.now(); lastRx = 0;
+  await send(cmd);
+  while (true){
+    await sleep(100);
+    const now = Date.now();
+    if (label && capture.buf.length) progress(label + ' ' + formatBytes(capture.buf.length) + ' received…');
+    if (onProgress) onProgress(capture.buf.length, now - start);
+    if (capture.buf.length === 0){ if (now - start > firstWait) break; }
+    else if (now - lastRx > idle) break;
+  }
+  const out = capture.buf; capture = null; return out;
+}
+
+function formatBytes(n){ return n < 1024 ? n + ' B' : n < 1048576 ? (n/1024).toFixed(1) + ' KB' : (n/1048576).toFixed(2) + ' MB'; }
+
+async function withBusy(fn){
+  if (busy) return; busy = true; setEnabled();
+  try{ await fn(); } catch(e){ progress('Something went wrong: ' + e.message); }
+  finally{ busy = false; setEnabled(); }
+}
+
+async function openMenu(){
+  progress('Opening the main menu…');
+  await run('\r', { idle: 700, firstWait: 2500 });
+  progress('Opening the file menu…');
+  await run('s', { idle: 700, firstWait: 2500 });
+  setDone('s2', true);
+  await listFiles();
+}
+
+let fileNames = [];
+async function listFiles(){
+  progress('Reading the file list…');
+  const out = await run('dir\r', { idle: 900, firstWait: 4000 });
+  const seen = new Map();
+  out.split(/\r?\n/).forEach(line => {
+    const m = line.match(/([A-Za-z0-9_\-~.]+\.(?:txt|csv|log|cfg|ubx|dat))/i);
+    if (m && !/^\s*(dir|ls|type|del|sz)\b/i.test(line) && !seen.has(m[1])) seen.set(m[1], line.replace(m[1], '').trim());
+  });
+  fileNames = [...seen.keys()];
+  renderFiles(seen);
+  progress(fileNames.length ? 'Found ' + fileNames.length + ' file' + (fileNames.length > 1 ? 's' : '') + '.' :
+    'No files recognized. Check the terminal: if you don’t see the file menu, click “Open menu and list files” again, or type dir in the command box.');
+}
+
+const rows = new Map();
+function renderFiles(map){
+  const ul = $('files'); ul.innerHTML = ''; rows.clear();
+  if (!map.size){ ul.innerHTML = '<li><p class="empty">No files listed yet.</p></li>'; return; }
+  for (const [name, meta] of map){
+    const li = document.createElement('li');
+    const info = document.createElement('div');
+    const n = document.createElement('span'); n.className = 'fname'; n.textContent = name;
+    info.appendChild(n);
+    if (meta){ const m = document.createElement('span'); m.className = 'fmeta'; m.textContent = meta; info.appendChild(m); }
+    const st = document.createElement('span'); st.className = 'fstat'; st.setAttribute('aria-live', 'polite'); info.appendChild(st);
+    const b = document.createElement('button'); b.className = 'ghost fbtn'; b.textContent = 'Download';
+    b.addEventListener('click', () => withBusy(() => downloadFile(name)));
+    li.append(info, b); ul.appendChild(li);
+    rows.set(name, { li, btn: b, stat: st });
+  }
+  setEnabled();
+}
+
+function rowState(name, state, btnText, statText){
+  const r = rows.get(name); if (!r) return;
+  r.li.classList.remove('working', 'saved', 'failed');
+  if (state) r.li.classList.add(state);
+  if (btnText != null) r.btn.textContent = btnText;
+  if (statText != null) r.stat.textContent = statText;
+}
+
+function clean(raw, name){
+  let lines = raw.split(/\r?\n/);
+  if (lines.length && /type\s/i.test(lines[0])) lines.shift();
+  if ($('csvOnly').checked){
+    lines = lines.filter(l => l.includes(','));
+  } else {
+    while (lines.length && (/^\s*$/.test(lines[lines.length-1]) || /^\s*>/.test(lines[lines.length-1]))) lines.pop();
+  }
+  return lines.join('\n') + '\n';
+}
+
+function save(text, name){
+  let out = name;
+  if ($('csvOnly').checked) out = name.replace(/\.[^.]+$/, '') + '.csv';
+  const blob = new Blob([text], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = out;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  return out;
+}
+
+async function downloadFile(name){
+  const r = rows.get(name);
+  if (r) r.li.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  rowState(name, 'working', 'Starting…', 'Asking the OLA for this file…');
+  progress('Requesting ' + name + '…');
+  const raw = await run('type ' + name + '\r', {
+    idle: 2000, firstWait: 8000, label: name + ':',
+    onProgress: (bytes, ms) => {
+      if (!bytes){ rowState(name, 'working', 'Waiting…', 'Waiting for the OLA to respond…'); return; }
+      const rate = bytes / Math.max(ms / 1000, 0.5);
+      rowState(name, 'working', 'Downloading…', formatBytes(bytes) + ' received (' + formatBytes(rate) + '/s)');
+    }
+  });
+  if (!raw.trim()){
+    rowState(name, 'failed', 'Try again', 'Nothing came back. Make sure the file menu is open.');
+    progress('Nothing came back for ' + name + '. Make sure the file menu is open.'); return false;
+  }
+  rowState(name, 'working', 'Saving…', 'Cleaning up and saving…');
+  const text = clean(raw, name);
+  const lines = text.trim() ? text.trim().split('\n').length : 0;
+  if ($('csvOnly').checked && lines === 0){
+    rowState(name, 'failed', 'Try again', 'No data lines found. Turn off “Keep only data lines” to save the raw text.');
+    progress(name + ' had no comma-separated lines. Turn off “Keep only data lines” to save the raw text.'); return false;
+  }
+  const saved = save(text, name);
+  setDone('s3', true);
+  rowState(name, 'saved', 'Saved ✓', 'Saved as ' + saved + ' (' + lines + ' lines, ' + formatBytes(text.length) + ')');
+  progress('Saved ' + saved + ' (' + lines + ' lines, ' + formatBytes(text.length) + ').');
+  return true;
+}
+
+async function downloadAll(){
+  if (!fileNames.length){ progress('List the files first.'); return; }
+  let ok = 0;
+  for (const f of fileNames){ if (await downloadFile(f)) ok++; await sleep(400); }
+  progress('Finished: saved ' + ok + ' of ' + fileNames.length + ' files.');
+}
+
+async function exitMenus(){
+  progress('Leaving the menus…');
+  await run('x', { idle: 700, firstWait: 2000 });
+  await run('x', { idle: 700, firstWait: 2000 });
+  setDone('s4', true);
+  progress('Sent exit. If sensor data isn’t scrolling again, type x in the command box, or press the OLA’s reset button.');
+}
+
+$('btnConnect').onclick = connect;
+$('btnDisconnect').onclick = disconnect;
+$('btnMenu').onclick = () => withBusy(openMenu);
+$('btnRefresh').onclick = () => withBusy(listFiles);
+$('btnAll').onclick = () => withBusy(downloadAll);
+$('btnExit').onclick = () => withBusy(exitMenus);
+$('btnManual').onclick = () => { const n = $('manual').value.trim(); if (n) withBusy(() => downloadFile(n)); };
+$('btnSend').onclick = async () => { const v = $('cmdInput').value; await send(v.length === 1 ? v : v + '\r'); $('cmdInput').value = ''; };
+$('cmdInput').addEventListener('keydown', e => { if (e.key === 'Enter' && !$('btnSend').disabled) $('btnSend').click(); });
+$('btnClear').onclick = () => { termBuf = ''; $('term').textContent = ''; };
+if ('serial' in navigator) navigator.serial.addEventListener('disconnect', e => { if (port && e.target === port) disconnect(); });
+setEnabled();
+</script>
+</body>
+</html>
