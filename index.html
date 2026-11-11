@@ -168,7 +168,6 @@ let lastRx = 0, capture = null, busy = false;
 // The OLA leaves its file menu after 60 seconds without a command, and its main menu
 // 15 seconds after that, so the page tracks this and reopens the menu when needed.
 let menuOpen = false, lastCmdAt = 0, rxTail = '';
-const MENU_IDLE_MS = 50000;
 let termBuf = '', termDirty = false;
 const TERM_MAX = 40000;
 const enc = new TextEncoder();
@@ -278,27 +277,49 @@ async function withBusy(fn){
   finally{ busy = false; setEnabled(); }
 }
 
+// The file menu prints its command list when it opens, so seeing that list
+// confirms the OLA is really in the file menu before any file command is sent.
+const MENU_HELP = /List files|HELP\s+-/i;
 async function reopenMenu(){
   await run('\r', { idle: 700, firstWait: 2500 });
-  await run('s', { idle: 700, firstWait: 2500 });
-  menuOpen = true;
+  let out = await run('s', { idle: 900, firstWait: 3000 });
+  if (!MENU_HELP.test(out)){
+    // Most likely the file menu was already open, so the "s" is waiting in its
+    // command line. Clear it, then ask the file menu for its command list.
+    await run('\r', { idle: 700, firstWait: 2000 });
+    out = await run('help\r', { idle: 900, firstWait: 3000 });
+  }
+  menuOpen = MENU_HELP.test(out);
+  return menuOpen;
 }
 async function openMenu(){
   progress('Opening the file menu…');
-  await reopenMenu();
+  if (!(await reopenMenu())){
+    progress('Couldn’t confirm the OLA’s file menu is open, so nothing else was sent. Check the terminal below, then try again.');
+    return;
+  }
   setDone('s2', true);
   await listFiles();
 }
-// Before each file command, reopen the file menu if the OLA has timed out of it.
+// The OLA leaves its file menu 60 seconds after the last command. Before each file
+// command, reopen it if needed, and send nothing unless the menu is confirmed open.
+const MENU_SAFE_MS = 55000, MENU_TIMEOUT_MS = 62000;
 async function ensureMenu(){
-  if (menuOpen && Date.now() - lastCmdAt < MENU_IDLE_MS) return;
+  const idle = Date.now() - lastCmdAt;
+  if (menuOpen && idle < MENU_SAFE_MS) return true;
+  if (menuOpen && idle < MENU_TIMEOUT_MS){
+    progress('Waiting a few seconds for the OLA…');
+    await sleep(MENU_TIMEOUT_MS - idle);
+  }
   progress('The OLA closed its file menu after sitting idle. Reopening it…');
-  await reopenMenu();
+  if (await reopenMenu()) return true;
+  progress('Couldn’t confirm the OLA’s file menu is open, so the command wasn’t sent. Check the terminal below, then try again.');
+  return false;
 }
 
 let fileNames = [];
 async function listFiles(){
-  await ensureMenu();
+  if (!(await ensureMenu())) return;
   progress('Reading the file list…');
   const out = await run('dir\r', { idle: 900, firstWait: 4000 });
   const seen = new Map();
@@ -369,7 +390,7 @@ async function downloadFile(name){
   const r = rows.get(name);
   if (r) r.li.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   rowState(name, 'working', 'Starting…', 'Asking the OLA for this file…');
-  await ensureMenu();
+  if (!(await ensureMenu())){ rowState(name, 'failed', 'Try again', 'The OLA’s file menu wasn’t open.'); return false; }
   progress('Requesting ' + name + '…');
   const raw = await run('type ' + name + '\r', {
     idle: 2000, firstWait: 8000, label: name + ':',
@@ -420,7 +441,7 @@ function deleteClick(name){
 async function deleteFile(name){
   const r = rows.get(name);
   rowState(name, 'deleting', null, 'Deleting from the SD card…');
-  await ensureMenu();
+  if (!(await ensureMenu())){ rowState(name, 'failed', null, 'Not deleted: the OLA’s file menu wasn’t open.'); return false; }
   progress('Deleting ' + name + '…');
   const out = await run('del ' + name + '\r', { idle: 900, firstWait: 4000 });
   if (/deleted/i.test(out) && !/failed/i.test(out)){
@@ -445,7 +466,8 @@ async function downloadAll(){
 
 async function exitMenus(){
   progress('Leaving the menus…');
-  await run('x', { idle: 700, firstWait: 2000 });
+  // The file menu needs Enter after a command; the main menu takes a single key.
+  if (menuOpen && Date.now() - lastCmdAt < MENU_SAFE_MS) await run('x\r', { idle: 700, firstWait: 2000 });
   await run('x', { idle: 700, firstWait: 2000 });
   menuOpen = false;
   setDone('s4', true);
