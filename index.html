@@ -280,8 +280,30 @@ async function withBusy(fn){
 // The file menu prints its command list when it opens, so seeing that list
 // confirms the OLA is really in the file menu before any file command is sent.
 const MENU_HELP = /List files|HELP\s+-/i;
+// When the OLA logs slower than every 2 seconds it sleeps between readings and
+// misses anything sent while asleep. So keep sending Enter (which the menus
+// ignore) every 200 ms until the main menu appears, for up to 20 seconds.
+const WAKE_MAX_MS = 20000, WAKE_EVERY_MS = 200;
+async function wakeToMainMenu(){
+  capture = { buf:'' };
+  const start = Date.now(); let found = false;
+  while (port && Date.now() - start < WAKE_MAX_MS){
+    await send('\r');
+    await sleep(WAKE_EVERY_MS);
+    if (/Menu:\s*Main Menu/i.test(capture.buf)){ found = true; break; }
+    const secs = Math.floor((Date.now() - start) / 1000);
+    if (secs >= 1) progress('Waiting for the OLA to wake up (it may be sleeping between readings)… ' + secs + ' s');
+  }
+  if (found){ // let the rest of the menu finish printing
+    let last = -1;
+    while (capture.buf.length !== last){ last = capture.buf.length; await sleep(400); }
+  }
+  capture = null;
+  return found;
+}
 async function reopenMenu(){
-  await run('\r', { idle: 700, firstWait: 2500 });
+  const awake = await wakeToMainMenu();
+  if (awake) progress('The OLA is awake. Opening the file menu…');
   let out = await run('s', { idle: 900, firstWait: 3000 });
   if (!MENU_HELP.test(out)){
     // Most likely the file menu was already open, so the "s" is waiting in its
@@ -295,7 +317,7 @@ async function reopenMenu(){
 async function openMenu(){
   progress('Opening the file menu…');
   if (!(await reopenMenu())){
-    progress('Couldn’t confirm the OLA’s file menu is open, so nothing else was sent. Check the terminal below, then try again.');
+    progress('Couldn’t confirm the OLA’s file menu is open, so nothing else was sent. Check the terminal below, then try again. If the OLA waits more than 20 seconds between readings, unplug it, plug it back in, reconnect, and try right away.');
     return;
   }
   setDone('s2', true);
@@ -327,10 +349,23 @@ async function listFiles(){
     const m = line.match(/([A-Za-z0-9_\-~.]+\.(?:txt|csv|log|cfg|ubx|dat))/i);
     if (m && !/^\s*(dir|ls|type|del|sz)\b/i.test(line) && !seen.has(m[1])) seen.set(m[1], line.replace(m[1], '').trim());
   });
-  fileNames = [...seen.keys()];
-  renderFiles(seen);
+  const sorted = new Map([...seen.entries()].sort(newestFirst));
+  fileNames = [...sorted.keys()];
+  renderFiles(sorted);
   progress(fileNames.length ? 'Found ' + fileNames.length + ' file' + (fileNames.length > 1 ? 's' : '') + '.' :
     'No files recognized. Check the terminal: if you don’t see the file menu, click “Open menu and list files” again, or type dir in the command box.');
+}
+
+// Newest first: by the date and time the OLA lists for each file
+// (YYYY-MM-DD hh:mm), then by the file's number (dataLog00012 before dataLog00011).
+function fileDate(meta){ const m = (meta || '').match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})/); return m ? m[1]+m[2]+m[3]+m[4].padStart(2,'0')+m[5] : ''; }
+function fileNum(name){ const m = name.match(/(\d+)\.[^.]+$/); return m ? Number(m[1]) : -1; }
+function newestFirst([a, am], [b, bm]){
+  const da = fileDate(am), db = fileDate(bm);
+  if (da !== db) return da < db ? 1 : -1;
+  const na = fileNum(a), nb = fileNum(b);
+  if (na !== nb) return nb - na;
+  return a.localeCompare(b);
 }
 
 const rows = new Map();
