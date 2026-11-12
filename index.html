@@ -79,6 +79,13 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid 
 .fname{font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;font-weight:500;overflow-wrap:anywhere}
 .fmeta{display:block;color:var(--muted);font-size:.82rem;font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace}
 .empty{color:var(--muted);margin:0}
+.filebox{max-height:min(420px,55vh);overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:0 12px;background:var(--panel)}
+.howto{margin:0 0 20px;padding:12px 16px;border:1px solid var(--line);border-left:4px solid var(--ok);border-radius:8px;background:var(--panel);max-width:80ch}
+.howto h2{margin:0 0 6px}
+.howto ol{margin:6px 0 8px;padding-left:22px}
+.howto li{margin:2px 0}
+.howto p{margin:6px 0 0;color:var(--muted);font-size:.92rem}
+kbd{font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;font-size:.88em;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 5px;background:var(--bg)}
 .progress{margin:12px 0 0;font-size:.92rem;color:var(--muted);min-height:1.5em}
 .check{display:flex;gap:8px;align-items:flex-start;margin-top:14px;font-size:.92rem;color:var(--ink)}
 .term-wrap{margin-top:20px}
@@ -93,6 +100,17 @@ pre#term{margin:10px 0;height:240px;overflow:auto;background:var(--term);border:
   <p class="lede">Pull log files off an OpenLog Artemis over USB, without removing the card. Close CoolTerm and the Arduino Serial Monitor first, since only one program can use the port.</p>
 
   <p class="requirement"><strong>Use a desktop or laptop computer with Chrome, Edge, or Firefox.</strong> Safari can’t connect to the OLA over USB.</p>
+
+  <div class="howto">
+    <h2>To stop logging and shut the OLA down</h2>
+    <ol>
+      <li>In a terminal at 115200 baud (CoolTerm, or the Terminal box at the bottom of this page), <strong>hold down <kbd>Return</kbd></strong> until the main menu appears.</li>
+      <li>Type <kbd>q</kbd>, then <kbd>y</kbd> to confirm.</li>
+    </ol>
+    <p><strong>Or press the off button</strong> (pin 32 to ground). On battery, one press works: wait up to one logging interval for the OLA to shut down. With USB plugged in, it often misses a single press, so press it several times over about 5 seconds.</p>
+    <p>Either way, the OLA saves and closes the log file, then goes into deep sleep. Wait for the power LED to go out before disconnecting anything. To start it again, reconnect USB or the battery.</p>
+    <p>If it logs every 2 seconds or slower, holding Return only works when <em>1) Configure Terminal Output → 21) Minimum awake time</em> is set (for example 2000 ms). Quitting with <kbd>q</kbd> doesn’t save menu changes, so if you changed any settings, leave the menu with <kbd>x</kbd> first, then reopen it and quit.</p>
+  </div>
 
   <div id="unsupported" class="notice" hidden>This browser can’t talk to USB serial devices. Open this page in Chrome, Edge, or Firefox on a desktop or laptop computer.</div>
 
@@ -138,7 +156,9 @@ pre#term{margin:10px 0;height:240px;overflow:auto;background:var(--term);border:
           <button id="btnAll" disabled>Download all</button>
         </div>
       </div>
-      <ul class="files" id="files"><li><p class="empty">Connect and open the menu to see files.</p></li></ul>
+      <div class="filebox" tabindex="0" aria-label="File list (scrolls)">
+        <ul class="files" id="files"><li><p class="empty">Connect and open the menu to see files.</p></li></ul>
+      </div>
       <label class="check"><input type="checkbox" id="csvOnly" checked>
         <span>Keep only data lines (lines with commas) and save as .csv. Turn this off to save the raw text exactly as received.</span></label>
       <div class="row" style="margin-top:12px">
@@ -280,19 +300,38 @@ async function withBusy(fn){
 // The file menu prints its command list when it opens, so seeing that list
 // confirms the OLA is really in the file menu before any file command is sent.
 const MENU_HELP = /List files|HELP\s+-/i;
-// When the OLA logs slower than every 2 seconds it sleeps between readings and
-// misses anything sent while asleep. So keep sending Enter (which the menus
-// ignore) every 200 ms until the main menu appears, for up to 20 seconds.
-const WAKE_MAX_MS = 20000, WAKE_EVERY_MS = 200;
+// When the OLA logs every 2 seconds or slower, it sleeps between readings and
+// clears any typed characters each time it wakes, so it can't be interrupted
+// that way (unless its "minimum awake time" is set). But it always opens its
+// main menu by itself when it starts up. So: send Enter (which the menus ignore)
+// for a few seconds in case it's awake; if no menu appears, restart the OLA
+// through the USB control lines and wait for its startup menu.
+const POKE_MS = 4000, BOOT_WAIT_MS = 15000, POKE_EVERY_MS = 200;
+async function pokeUntilMenu(ms, label){
+  const start = Date.now();
+  while (port && Date.now() - start < ms){
+    await send('\r');
+    await sleep(POKE_EVERY_MS);
+    if (/Menu:\s*Main Menu/i.test(capture.buf)) return true;
+    const secs = Math.floor((Date.now() - start) / 1000);
+    if (secs >= 1) progress(label + ' ' + secs + ' s');
+  }
+  return false;
+}
+async function restartOLA(){
+  try{
+    await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+    await sleep(150);
+    await port.setSignals({ dataTerminalReady: true, requestToSend: true });
+    return true;
+  }catch(e){ termAppend('\n[couldn’t restart the OLA: ' + e.message + ']\n'); return false; }
+}
 async function wakeToMainMenu(){
   capture = { buf:'' };
-  const start = Date.now(); let found = false;
-  while (port && Date.now() - start < WAKE_MAX_MS){
-    await send('\r');
-    await sleep(WAKE_EVERY_MS);
-    if (/Menu:\s*Main Menu/i.test(capture.buf)){ found = true; break; }
-    const secs = Math.floor((Date.now() - start) / 1000);
-    if (secs >= 1) progress('Waiting for the OLA to wake up (it may be sleeping between readings)… ' + secs + ' s');
+  let found = await pokeUntilMenu(POKE_MS, 'Waiting for the OLA to answer…');
+  if (!found && port){
+    progress('The OLA seems to be sleeping between readings. Restarting it so its menu opens…');
+    if (await restartOLA()) found = await pokeUntilMenu(BOOT_WAIT_MS, 'Restarting the OLA and waiting for its menu…');
   }
   if (found){ // let the rest of the menu finish printing
     let last = -1;
@@ -317,7 +356,7 @@ async function reopenMenu(){
 async function openMenu(){
   progress('Opening the file menu…');
   if (!(await reopenMenu())){
-    progress('Couldn’t confirm the OLA’s file menu is open, so nothing else was sent. Check the terminal below, then try again. If the OLA waits more than 20 seconds between readings, unplug it, plug it back in, reconnect, and try right away.');
+    progress('Couldn’t confirm the OLA’s file menu is open, so nothing else was sent. Check the terminal below, then try again. If that keeps happening, unplug the OLA, plug it back in, click Disconnect and then Connect, and try again right away.');
     return;
   }
   setDone('s2', true);
@@ -425,6 +464,7 @@ async function downloadFile(name){
   const r = rows.get(name);
   if (r) r.li.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   rowState(name, 'working', 'Starting…', 'Asking the OLA for this file…');
+  { const r = rows.get(name); if (r) r.li.scrollIntoView({ block:'nearest', behavior:'smooth' }); } // keep it visible in the scrolling list
   if (!(await ensureMenu())){ rowState(name, 'failed', 'Try again', 'The OLA’s file menu wasn’t open.'); return false; }
   progress('Requesting ' + name + '…');
   const raw = await run('type ' + name + '\r', {
